@@ -162,8 +162,8 @@ npm run dev
 
 ## 👨‍💻 Equipo de Desarrollo
 
-- Nombre del Estudiante 1 – Ingeniería en Informática
-- Nombre del Estudiante 2 – Ingeniería en Informática
+- Christian Moises de Alba Velarde - 219246782 – Ingeniería en Computación
+- Miguel Angel Covarrubias Rios  - 21811368 – Ingeniería en Informática
 
 ---
 
