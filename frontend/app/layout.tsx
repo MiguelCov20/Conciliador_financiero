@@ -6,6 +6,7 @@ import "./globals.css";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { ThemeProvider } from "../components/theme-provider";
+import { ConciliationProvider } from "../context/ConciliationContext";
 import { useTheme } from "next-themes";
 import { 
   LayoutDashboard, Upload, FileText, BrainCircuit, 
@@ -196,7 +197,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="es" suppressHydrationWarning>
       <body className={inter.className}>
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
-          <LayoutContent>{children}</LayoutContent>
+          <ConciliationProvider>
+            <LayoutContent>{children}</LayoutContent>
+          </ConciliationProvider>
         </ThemeProvider>
       </body>
     </html>
