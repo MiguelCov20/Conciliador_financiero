@@ -3,6 +3,7 @@ import { Upload, CheckCircle2, ArrowRight, File as FileIcon, X, Loader2 } from "
 import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useConciliation } from "../../context/ConciliationContext";
+import Papa from "papaparse";
 
 export default function CargarArchivos() {
   const router = useRouter();
@@ -47,11 +48,25 @@ export default function CargarArchivos() {
     
     setIsProcessing(true);
     
-    // Simular tiempo de carga de 2 segundos
-    setTimeout(() => {
-      addConciliation(conciliationName);
-      router.push("/");
-    }, 2000);
+    const file = files[0]; // Procesamos el primer archivo como principal
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: (results: any) => {
+        const headers = results.meta.fields || [];
+        const rows = results.data;
+        
+        // Simular tiempo mínimo de carga visual de 1 segundo para la UX
+        setTimeout(() => {
+          addConciliation(conciliationName, headers, rows, files.length);
+          router.push("/");
+        }, 1000);
+      },
+      error: (error: any) => {
+        console.error("Error procesando CSV:", error);
+        setIsProcessing(false);
+      }
+    });
   };
 
   return (
