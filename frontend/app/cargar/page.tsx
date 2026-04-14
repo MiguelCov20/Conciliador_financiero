@@ -1,209 +1,303 @@
 'use client';
-import { Upload, CheckCircle2, ArrowRight, File as FileIcon, X, Loader2 } from "lucide-react";
-import { useState, useRef } from "react";
+import { Play, Save, Loader2, ArrowRight } from "lucide-react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useConciliation } from "../../context/ConciliationContext";
-import Papa from "papaparse";
+import * as XLSX from "xlsx";
+import { ResourceCard } from "../../components/ResourceCard";
+import { MappingTable, MappingRule } from "../../components/MappingTable";
+import { ReconciliationSummary } from "../../components/ReconciliationSummary";
 
 export default function CargarArchivos() {
   const router = useRouter();
   const { addConciliation } = useConciliation();
   
-  const [step, setStep] = useState(1);
-  const [conciliationName, setConciliationName] = useState("");
-  const [isDragging, setIsDragging] = useState(false);
-  const [files, setFiles] = useState<File[]>([]);
+  const [name, setName] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
+  // Resource A State
+  const [fileA, setFileA] = useState<File | null>(null);
+  const [headersA, setHeadersA] = useState<string[]>([]);
+  const [rowsA, setRowsA] = useState<any[]>([]);
+  const [currencyA, setCurrencyA] = useState("MXN");
+
+  // Resource B State
+  const [fileB, setFileB] = useState<File | null>(null);
+  const [headersB, setHeadersB] = useState<string[]>([]);
+  const [rowsB, setRowsB] = useState<any[]>([]);
+  const [currencyB, setCurrencyB] = useState("MXN");
+
+  // Mapping State
+  const [rules, setRules] = useState<MappingRule[]>([
+    { id: '1', colA: '', colB: '' }
+  ]);
+  const [tolerance, setTolerance] = useState<number>(0);
+
+  // Results State
+  const [viewResults, setViewResults] = useState(false);
+  const [summaryData, setSummaryData] = useState<any>(null);
+
+  const handleFileDrop = (file: File, side: "A" | "B") => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array' });
+        const firstSheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[firstSheetName];
+        
+        // Obtenemos los datos, asegurándonos de extraer bien las columnas
+        const rows = XLSX.utils.sheet_to_json<any>(worksheet);
+        
+        let headers: string[] = [];
+        if (rows.length > 0) {
+          headers = Object.keys(rows[0]);
+        } else {
+          const headerRow = XLSX.utils.sheet_to_json<string[]>(worksheet, { header: 1 })[0];
+          if (headerRow) headers = headerRow;
+        }
+
+        if (side === "A") {
+          setFileA(file); setHeadersA(headers); setRowsA(rows);
+        } else {
+          setFileB(file); setHeadersB(headers); setRowsB(rows);
+        }
+      } catch (err) {
+        console.error("Error reading Excel file:", err);
+        alert(`No se pudo interpretar el archivo ${file.name}. Asegúrese de que sea un formato de tabla válido (.csv, .xlsx)`);
+      }
+    };
+    reader.readAsArrayBuffer(file);
   };
 
-  const handleDragLeave = () => {
-    setIsDragging(false);
+  const handleUpdateRule = (id: string, field: 'colA' | 'colB', value: string) => {
+    setRules(rules.map(r => r.id === id ? { ...r, [field]: value } : r));
   };
+  const handleAddRule = () => setRules([...rules, { id: Date.now().toString(), colA: '', colB: '' }]);
+  const handleRemoveRule = (id: string) => setRules(rules.filter(r => r.id !== id));
 
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      setFiles(Array.from(e.dataTransfer.files));
-    }
-  };
+  const validRules = rules.filter(r => r.colA && r.colB);
+  const isReadyToRun = fileA && fileB && validRules.length > 0;
+  
+  const [unifiedHeaders, setUnifiedHeaders] = useState<string[]>([]);
+  const [unifiedRows, setUnifiedRows] = useState<any[]>([]);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      setFiles(Array.from(e.target.files));
-    }
-  };
+  const runSimulation = () => {
+    if (!isReadyToRun) return;
 
-  const removeFile = (index: number) => {
-    setFiles(files.filter((_, i) => i !== index));
-  };
-
-  const startConciliation = () => {
-    if (!conciliationName || files.length === 0) return;
-    
     setIsProcessing(true);
     
-    const file = files[0]; // Procesamos el primer archivo como principal
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: (results: any) => {
-        const headers = results.meta.fields || [];
-        const rows = results.data;
+    setTimeout(() => {
+      // Motor de Cruce
+      const pkRule = validRules[0];
+      let amountRule = validRules.find(r => 
+        r.colA.toLowerCase().includes('monto') || r.colA.toLowerCase().includes('amount') || r.colA.toLowerCase().includes('saldo') || r.colA.toLowerCase().includes('valor') ||
+        r.colB.toLowerCase().includes('monto') || r.colB.toLowerCase().includes('amount') || r.colB.toLowerCase().includes('saldo') || r.colB.toLowerCase().includes('valor')
+      );
+      if (!amountRule && validRules.length > 1) amountRule = validRules[1];
+
+      let matchedACount = 0;
+      let matchedBCount = 0;
+      let totalDiff = 0;
+      let adjustedCount = 0;
+
+      const mapB = new Map();
+      rowsB.forEach(rowB => {
+        const key = String(rowB[pkRule.colB]).trim();
+        if (!mapB.has(key)) mapB.set(key, []);
+        mapB.get(key).push(rowB);
+      });
+
+      const newUnifiedRows: any[] = [];
+      const usedB = new Set<any>();
+
+      rowsA.forEach(rowA => {
+        const key = String(rowA[pkRule.colA]).trim();
+        const matchesInB = mapB.get(key);
         
-        // Simular tiempo mínimo de carga visual de 1 segundo para la UX
-        setTimeout(() => {
-          addConciliation(conciliationName, headers, rows, files.length);
-          router.push("/");
-        }, 1000);
-      },
-      error: (error: any) => {
-        console.error("Error procesando CSV:", error);
-        setIsProcessing(false);
+        const newRow = { ...rowA };
+        
+        let amountA = 0;
+        if (amountRule && rowA[amountRule.colA] !== undefined) {
+          amountA = parseFloat(String(rowA[amountRule.colA]).replace(/[^0-9.-]+/g,"")) || 0;
+        }
+        
+        if (matchesInB && matchesInB.length > 0) {
+          const rowB = matchesInB[0];
+          usedB.add(rowB);
+
+          // Agregar columnas B con prefijo B_
+          Object.keys(rowB).forEach(k => {
+            newRow[`B_${k}`] = rowB[k];
+          });
+
+          let amountB = 0;
+          if (amountRule && rowB[amountRule.colB] !== undefined) {
+            amountB = parseFloat(String(rowB[amountRule.colB]).replace(/[^0-9.-]+/g,"")) || 0;
+          }
+
+          const diff = amountA - amountB;
+          newRow['Diferencia_Monto'] = diff;
+           // Lo sumamos a la diferencia total absoluta para mostrar discrepancia monetaria de la ejecución
+          totalDiff += Math.abs(diff);
+
+          if (Math.abs(diff) <= tolerance) {
+            if (Math.abs(diff) > 0) adjustedCount++; 
+            newRow['Estado'] = 'Conciliado';
+            matchedACount++;
+            matchedBCount++;
+          } else {
+            newRow['Estado'] = 'Diferencia';
+          }
+        } else {
+          newRow['Diferencia_Monto'] = amountA;
+          newRow['Estado'] = 'No en B';
+          totalDiff += Math.abs(amountA);
+        }
+        newUnifiedRows.push(newRow);
+      });
+
+      rowsB.forEach(rowB => {
+        if (!usedB.has(rowB)) {
+          const newRow: any = {};
+          // Filler para A
+          headersA.forEach(h => newRow[h] = "");
+
+          Object.keys(rowB).forEach(k => {
+            newRow[`B_${k}`] = rowB[k];
+          });
+          
+          let amountB = 0;
+          if (amountRule && rowB[amountRule.colB] !== undefined) {
+            amountB = parseFloat(String(rowB[amountRule.colB]).replace(/[^0-9.-]+/g,"")) || 0;
+          }
+
+          newRow['Diferencia_Monto'] = -amountB;
+          newRow['Estado'] = 'No en A';
+          totalDiff += Math.abs(amountB);
+          newUnifiedRows.push(newRow);
+        }
+      });
+
+      let extractedHeaders: string[] = [];
+      if (newUnifiedRows.length > 0) {
+        extractedHeaders = Object.keys(newUnifiedRows[0]);
       }
-    });
+
+      setUnifiedHeaders(extractedHeaders);
+      setUnifiedRows(newUnifiedRows);
+
+      setSummaryData({
+        totalA: rowsA.length,
+        matchedA: matchedACount,
+        totalB: rowsB.length,
+        matchedB: matchedBCount,
+        totalValueDiff: totalDiff, 
+        adjusted: adjustedCount 
+      });
+      setViewResults(true);
+      setIsProcessing(false);
+    }, 1200);
+  };
+
+  const saveConciliation = () => {
+    if (!name.trim()) {
+      alert("Agrega un nombre para la conciliación en la parte superior.");
+      return;
+    }
+    // Pasamos el mega dataset unificado
+    addConciliation(name, unifiedHeaders, unifiedRows, 2);
+    router.push('/');
   };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-8">
-      <div>
-        <h1 className="text-2xl font-bold text-slate-800 dark:text-white transition-colors">Nueva Conciliación</h1>
-        <p className="text-slate-500 dark:text-slate-400">Configura tus fuentes de datos y sube los archivos de transacciones.</p>
-      </div>
-
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-sm p-6 space-y-8">
-        
-        {/* PASO 1: Nombre */}
-        <div className={`transition-opacity ${step !== 1 && !isProcessing ? 'opacity-50 pointer-events-none' : ''}`}>
-          <h2 className="text-lg font-semibold text-slate-700 dark:text-slate-200 mb-4">Paso 1: Configurar Cruce</h2>
-          <div className="space-y-4 max-w-md">
-            <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Nombre de la conciliación activa</label>
-              <input 
-                type="text" 
-                autoFocus
-                placeholder="Ej. Conciliación Quincena VISA" 
-                className="w-full px-4 py-2 border border-slate-300 dark:border-slate-700 rounded-lg bg-transparent focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 dark:text-slate-200"
-                value={conciliationName}
-                onChange={(e) => setConciliationName(e.target.value)}
-                disabled={isProcessing}
-              />
-            </div>
-            {step === 1 && (
-              <button 
-                onClick={() => setStep(2)}
-                disabled={!conciliationName.trim()}
-                className="flex items-center gap-2 px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-all"
-              >
-                Siguiente <ArrowRight size={16} />
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* PASO 2: Subir Archivo */}
-        {step >= 2 && (
-          <div className="border-t border-slate-200 dark:border-slate-800 pt-8 animate-in fade-in slide-in-from-bottom-4">
-            <h2 className="text-lg font-semibold text-slate-700 dark:text-slate-200 mb-4">Paso 2: Sube tus archivos</h2>
-            
-            {files.length === 0 ? (
-              <div 
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-                className={`
-                  relative border-2 border-dashed rounded-2xl p-12
-                  flex flex-col items-center justify-center transition-all duration-300
-                  ${isDragging 
-                    ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' 
-                    : 'border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 hover:border-blue-400'}
-                `}
-              >
-                <div className="p-4 bg-blue-100 dark:bg-blue-900/50 text-blue-600 dark:text-blue-400 rounded-full mb-4">
-                  <Upload size={32} />
-                </div>
-                <h3 className="text-lg font-semibold text-slate-700 dark:text-slate-200">Arrastra todos tus archivos XLSX, XLS y CSV</h3>
-                <p className="text-slate-400 dark:text-slate-500 mt-1 text-center text-sm">puedes subir uno o más simultáneamente.</p>
-                <button 
-                  onClick={() => fileInputRef.current?.click()}
-                  className="mt-6 px-6 py-2 border border-slate-300 dark:border-slate-600 hover:border-blue-500 hover:text-blue-600 dark:text-slate-200 rounded-lg font-medium transition-all"
-                >
-                  Cargar desde tu computadora
-                </button>
-                <input ref={fileInputRef} type="file" multiple className="hidden" accept=".csv, .xlsx, .xls" onChange={handleFileChange} />
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden">
-                  <div className="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 px-4 py-2 text-xs font-medium text-slate-500 grid grid-cols-12 gap-4">
-                    <div className="col-span-6">Nombre</div>
-                    <div className="col-span-3">Tamaño</div>
-                    <div className="col-span-3 text-right">Acción</div>
-                  </div>
-                  <div className="divide-y divide-slate-100 dark:divide-slate-800">
-                    {files.map((file, idx) => (
-                      <div key={idx} className="px-4 py-3 grid grid-cols-12 gap-4 items-center text-sm bg-white dark:bg-slate-900">
-                        <div className="col-span-6 flex items-center gap-2 text-slate-700 dark:text-slate-200 font-medium">
-                          <FileIcon size={16} className="text-blue-500" />
-                          <span className="truncate">{file.name}</span>
-                        </div>
-                        <div className="col-span-3 text-slate-500">
-                          {(file.size / 1024).toFixed(1)} KB
-                        </div>
-                        <div className="col-span-3 flex justify-end">
-                          <button onClick={() => removeFile(idx)} disabled={isProcessing} className="text-slate-400 hover:text-red-500 transition-colors">
-                             <X size={16} />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                
-                <div className="flex justify-end pt-4">
-                  <button 
-                    onClick={startConciliation}
-                    disabled={isProcessing}
-                    className="flex items-center gap-2 px-8 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold shadow-lg shadow-blue-600/20 transition-all disabled:opacity-75"
-                  >
-                    {isProcessing ? (
-                      <>
-                        <Loader2 size={18} className="animate-spin" />
-                        Alineando grupos y cruzando datos...
-                      </>
-                    ) : (
-                      "Ejecutar Conciliación"
-                    )}
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Características del sistema */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-12 opacity-70">
-        <div className="flex gap-4 p-5 bg-transparent border border-slate-200 dark:border-slate-800 rounded-xl">
-          <CheckCircle2 className="text-green-500 shrink-0" size={24} />
-          <div>
-            <h3 className="font-medium text-slate-800 dark:text-slate-200">Normalización Automática</h3>
-            <p className="text-sm text-slate-500 dark:text-slate-400">Nuestro motor ETL detecta el formato del banco automáticamente.</p>
-          </div>
-        </div>
-        <div className="flex gap-4 p-5 bg-transparent border border-slate-200 dark:border-slate-800 rounded-xl">
-          <CheckCircle2 className="text-green-500 shrink-0" size={24} />
-          <div>
-            <h3 className="font-medium text-slate-800 dark:text-slate-200">Privacidad en Servidor</h3>
-            <p className="text-sm text-slate-500 dark:text-slate-400">Los datos se procesan en memoria y no se comparten de forma visible para IAs ajenas.</p>
-          </div>
+    <div className="max-w-6xl mx-auto space-y-8 pb-12">
+      {/* Naming Section */}
+      <div className="flex items-end gap-6 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-xl shadow-sm">
+        <div className="flex-1">
+          <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2 uppercase tracking-wide">
+            Nombre del Cruce Activo
+          </label>
+          <input 
+            type="text" 
+            placeholder="Ej: Conciliación Quincena Stripe vs Banco" 
+            className="w-full px-4 py-3 border border-slate-300 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 dark:text-slate-200 text-lg font-medium"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
         </div>
       </div>
+
+      {/* Dual Upload Section */}
+      <div className="grid md:grid-cols-2 gap-6">
+        <ResourceCard 
+          title="Recurso A" 
+          side="A" 
+          selectedFile={fileA} 
+          currency={currencyA}
+          onCurrencyChange={setCurrencyA}
+          onFileDrop={(f) => handleFileDrop(f, "A")}
+          onClear={() => { setFileA(null); setHeadersA([]); setRowsA([]); }}
+        />
+        <ResourceCard 
+          title="Recurso B" 
+          side="B" 
+          selectedFile={fileB} 
+          currency={currencyB}
+          onCurrencyChange={setCurrencyB}
+          onFileDrop={(f) => handleFileDrop(f, "B")}
+          onClear={() => { setFileB(null); setHeadersB([]); setRowsB([]); }}
+        />
+      </div>
+
+      {/* Mapping Engine */}
+      <div className="relative">
+        <div className="absolute left-1/2 top-0 bottom-0 w-px border-l-2 border-dashed border-slate-200 dark:border-slate-800 -z-10"></div>
+        <MappingTable 
+          headersA={headersA}
+          headersB={headersB}
+          rules={rules}
+          onAddRule={handleAddRule}
+          onUpdateRule={handleUpdateRule}
+          onRemoveRule={handleRemoveRule}
+          tolerance={tolerance}
+          onToleranceChange={setTolerance}
+        />
+      </div>
+
+      {/* Action to Simulate */}
+      {!viewResults ? (
+        <div className="flex justify-center pt-8">
+          {/* Ocultamos o mostramos dependiendo de si se cumplen las reglas */}
+          {isReadyToRun && (
+            <button 
+              onClick={runSimulation}
+              disabled={isProcessing}
+              className="flex items-center gap-2 px-10 py-3.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold shadow-lg shadow-blue-600/30 transition-all disabled:opacity-50 disabled:cursor-not-allowed animate-in zoom-in-95"
+            >
+              {isProcessing ? <Loader2 size={18} className="animate-spin" /> : <Play size={18} />}
+              {isProcessing ? "Conciliando transacciones..." : "Iniciar Conciliación"}
+            </button>
+          )}
+        </div>
+      ) : (
+         <div className="space-y-8 pt-4">
+           {/* Summary Section */}
+           {summaryData && <ReconciliationSummary {...summaryData} />}
+           
+           {/* Final Save */}
+           <div className="flex justify-end pt-4">
+             <button 
+               onClick={saveConciliation}
+               className="flex items-center gap-2 px-8 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold shadow-lg shadow-blue-600/30 transition-all"
+             >
+               <Save size={18} />
+               Guardar y Ver Detalles
+               <ArrowRight size={18} />
+             </button>
+           </div>
+         </div>
+      )}
     </div>
   );
 }

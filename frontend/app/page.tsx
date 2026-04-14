@@ -1,21 +1,27 @@
 'use client';
 import { Plus, Calendar, FileBox, ChevronDown, Download, Filter, Search, ArrowLeft, Table as TableIcon } from "lucide-react";
 import Link from "next/link";
+import { useState } from "react";
 import { useConciliation, ConciliationRecord } from "../context/ConciliationContext";
-import Papa from "papaparse";
+import * as XLSX from "xlsx";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 
 export default function Home() {
   const { conciliations, activeConciliation, setActiveConciliation, addColumnToActive } = useConciliation();
+  const [statusFilter, setStatusFilter] = useState("Todos");
 
   const handleDownload = () => {
     if (!activeConciliation || !activeConciliation.rows?.length) return;
-    const csv = Papa.unparse(activeConciliation.rows);
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `conciliacion_${activeConciliation.name.replace(/\s+/g, '_')}.csv`;
-    link.click();
+    
+    // Filtramos lo que está viendo el usuario para exportar
+    const rowsToExport = statusFilter === "Todos" 
+      ? activeConciliation.rows 
+      : activeConciliation.rows.filter((r: any) => r["Estado"] === statusFilter);
+
+    const worksheet = XLSX.utils.json_to_sheet(rowsToExport);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Resultados Unificados");
+    XLSX.writeFile(workbook, `Conciliacion_${activeConciliation.name.replace(/\s+/g, '_')}.xlsx`);
   };
 
   const handleAddColumn = () => {
@@ -29,42 +35,54 @@ export default function Home() {
     alert("Función de Tabla Dinámica en desarrollo...");
   };
 
-  // Función para obtener datos de una gráfica basada en una columna cualitativa probable (ej País, Estado)
-  const getPieData = (rows: any[], headers: string[]) => {
+  // 1. Gráfica de Distribución (Pie Chart) basada explícitamente en el "Estado"
+  const getPieData = (rows: any[]) => {
     if (!rows || rows.length === 0) return [];
     
-    // Tratamos de buscar una columna para clasificar
-    const potentialColumns = headers.filter(h => 
-      h.toLowerCase().includes('país') || h.toLowerCase().includes('pais') || 
-      h.toLowerCase().includes('estado') || h.toLowerCase().includes('status') ||
-      h.toLowerCase().includes('tarjeta') || h.toLowerCase().includes('tipo')
-    );
-    
-    // Si encontramos una columna categórica, o usamos la segunda columna asumiendo que no es ID
-    const colToUse = potentialColumns.length > 0 ? potentialColumns[0] : (headers.length > 1 ? headers[1] : headers[0]);
-    if (!colToUse) return [];
-
     const grouping: Record<string, number> = {};
     rows.forEach(row => {
-      const val = row[colToUse] || "Desconocido";
+      const val = row['Estado'] || "Desconocido";
       grouping[val] = (grouping[val] || 0) + 1;
     });
 
     return Object.entries(grouping).map(([key, value]) => ({ name: key, value }));
   };
 
-  const COLORS = ['#2563eb', '#3b82f6', '#60a5fa', '#93c5fd', '#bfdbfe'];
+  // 2. Gráfica de Montos Totales / Volúmenes (Recurso A vs Recurso B)
+  const getBarData = (rows: any[]) => {
+    if (!rows || rows.length === 0) return [];
+    let volA = 0;
+    let volB = 0;
+    
+    rows.forEach(r => {
+       if (r['Estado'] !== 'No en A') volA++;
+       if (r['Estado'] !== 'No en B') volB++;
+    });
+
+    return [
+      { name: "Recurso A", Volúmen: volA },
+      { name: "Recurso B", Volúmen: volB }
+    ];
+  };
+
+  const COLORS = ['#10b981', '#f59e0b', '#ef4444', '#64748b', '#3b82f6'];
 
   // Vista de Detalle
   if (activeConciliation) {
-    const pieData = getPieData(activeConciliation.rows, activeConciliation.headers);
+    const pieData = getPieData(activeConciliation.rows);
+    const barData = getBarData(activeConciliation.rows);
+
+    const filteredRows = activeConciliation.rows?.filter((row: any) => {
+      if (statusFilter === "Todos") return true;
+      return row["Estado"] === statusFilter;
+    });
 
     return (
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
             <button 
-              onClick={() => setActiveConciliation(null)}
+              onClick={() => { setActiveConciliation(null); setStatusFilter("Todos"); }}
               className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors text-slate-500"
             >
               <ArrowLeft size={20} />
@@ -74,51 +92,85 @@ export default function Home() {
             </h1>
           </div>
           
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 flex-wrap">
+             {/* Filtro Rápido de Estado */}
             <div className="flex items-center gap-2 text-sm text-slate-500">
-              <span>Grupos conciliables:</span>
-              <button className="flex items-center gap-2 px-3 py-1.5 border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-900">
-                Sin grupo <ChevronDown size={14} />
-              </button>
+              <Filter size={16} />
+              <select 
+                value={statusFilter} 
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="pl-3 pr-8 py-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg outline-none cursor-pointer focus:ring-2 focus:ring-blue-500 text-slate-700 dark:text-slate-200"
+              >
+                <option value="Todos">Ver Todos ({activeConciliation.rows.length})</option>
+                <option value="Conciliado">✓ Conciliados</option>
+                <option value="Diferencia">⚠ Diferencias</option>
+                <option value="No en B">✖ Solo en A</option>
+                <option value="No en A">✖ Solo en B</option>
+              </select>
             </div>
-            <button onClick={handleDownload} className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 rounded-lg shadow-sm hover:bg-slate-50">
-              <Download size={16} /> Descargar CSV
+            <button onClick={handleDownload} className="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 rounded-lg shadow-sm hover:bg-slate-50 transition-colors">
+              <Download size={16} /> Descargar Excel
             </button>
-            <button onClick={handleAddColumn} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg shadow-md hover:bg-blue-700">
+            <button onClick={handleAddColumn} className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg shadow-md hover:bg-blue-700 transition-colors">
               <Plus size={16} /> Agregar Columna
             </button>
           </div>
         </div>
 
-        {/* TABLA DE DATOS */}
+        {/* TABLA DE DATOS UNIFICADA */}
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-sm overflow-hidden flex flex-col max-h-[500px]">
-          <div className="flex-1 overflow-auto">
-            <table className="w-full text-sm text-left border-collapse">
+          <div className="flex-1 overflow-x-auto overflow-y-auto w-full">
+            <table className="w-full text-sm text-left border-collapse min-w-max">
               <thead className="text-xs text-slate-600 dark:text-slate-400 bg-slate-50 dark:bg-slate-800/80 sticky top-0 z-10">
                 <tr className="bg-white dark:bg-slate-900 border-b-2 border-slate-200 dark:border-slate-800 shadow-sm">
-                  {/* Encabezados Dinámicos */}
-                  {activeConciliation.headers?.map((header, idx) => (
-                    <th key={idx} className="border-x border-slate-200 dark:border-slate-700 px-4 py-2 font-semibold whitespace-nowrap">
-                      {header}
-                    </th>
-                  ))}
+                  {/* Encabezados Dinámicos Unificados */}
+                  {activeConciliation.headers?.map((header, idx) => {
+                    const isSystemCol = header === 'Estado' || header === 'Diferencia_Monto';
+                    const isBCold = header.startsWith('B_');
+                    return (
+                      <th 
+                        key={idx} 
+                        className={`border-x border-slate-200 dark:border-slate-700 px-6 py-4 font-semibold whitespace-nowrap ${isSystemCol ? 'bg-blue-50/80 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300' : ''} ${isBCold ? 'bg-purple-50/30 dark:bg-purple-900/20' : ''}`}
+                      >
+                        {header}
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody>
-                {activeConciliation.rows && activeConciliation.rows.length > 0 ? (
-                  activeConciliation.rows.map((row: any, i: number) => (
+                {filteredRows && filteredRows.length > 0 ? (
+                  filteredRows.map((row: any, i: number) => (
                     <tr key={i} className="border-b border-slate-200 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50 transition-colors">
-                      {activeConciliation.headers.map((header, idx) => (
-                        <td key={idx} className="border-r border-slate-200 dark:border-slate-700 px-4 py-2 text-slate-600 dark:text-slate-300 whitespace-nowrap">
-                          {row[header] !== undefined ? String(row[header]) : ''}
-                        </td>
-                      ))}
+                      {activeConciliation.headers.map((header, idx) => {
+                        const val = row[header];
+                        const isEstado = header === 'Estado';
+                        
+                        let cellContent = val !== undefined ? String(val) : '';
+                        
+                        return (
+                          <td key={idx} className="border-r border-slate-200 dark:border-slate-700 px-6 py-3 text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                            {isEstado ? (
+                              <span className={`px-3 py-1.5 text-xs font-bold rounded-full border ${
+                                val === 'Conciliado' ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400 dark:border-emerald-800' :
+                                val === 'Diferencia' ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:border-amber-800' :
+                                val === 'No en B' ? 'bg-red-50 text-red-700 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800' :
+                                'bg-slate-50 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700'
+                              }`}>
+                                {val}
+                              </span>
+                            ) : (
+                              cellContent
+                            )}
+                          </td>
+                        );
+                      })}
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={activeConciliation.headers?.length || 1} className="text-center py-8 text-slate-500">
-                      Datos no disponibles o en procesamiento...
+                    <td colSpan={activeConciliation.headers?.length || 1} className="text-center py-16 text-slate-500">
+                      No hay registros que coincidan con este filtro.
                     </td>
                   </tr>
                 )}
@@ -126,15 +178,15 @@ export default function Home() {
             </table>
           </div>
           
-          <div className="flex items-center justify-between p-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800">
+          <div className="flex items-center justify-between p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800">
             <div className="flex gap-2">
-              <button className="px-3 py-1 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded text-sm font-medium">Original</button>
-              <button onClick={handlePivot} className="px-3 py-1 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded text-sm font-medium flex items-center gap-1">
-                <Plus size={14} /> Tabla dinámica
+              <button className="px-4 py-1.5 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-md text-sm font-medium shadow-sm">Vista Original</button>
+              <button onClick={handlePivot} className="px-4 py-1.5 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-md text-sm font-medium flex items-center gap-1">
+                <TableIcon size={14} /> Tabla dinámica
               </button>
             </div>
-            <div className="text-sm font-bold text-slate-500">
-              Total filas: {activeConciliation.rows?.length || 0}
+            <div className="text-sm font-bold text-slate-500 px-4 py-1.5 rounded-full bg-slate-200/50 dark:bg-slate-900 shadow-inner">
+              Mostrando {filteredRows?.length || 0} de {activeConciliation.rows?.length || 0}
             </div>
           </div>
         </div>
@@ -143,11 +195,13 @@ export default function Home() {
         {pieData.length > 0 && (
           <div className="grid gap-6 md:grid-cols-2 mt-6">
              <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-sm">
-                <h2 className="text-sm font-medium text-slate-500 uppercase mb-4">Gráfica de Distribución</h2>
+                <h2 className="text-sm font-bold text-slate-700 dark:text-slate-300 uppercase mb-4 flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full bg-blue-500"></div> Distribución de Resultados
+                </h2>
                 <div className="h-64 w-full">
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
-                      <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} label>
+                      <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={85} label>
                          {pieData.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
                       </Pie>
                       <Tooltip />
@@ -157,14 +211,16 @@ export default function Home() {
              </div>
              
              <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-sm">
-                <h2 className="text-sm font-medium text-slate-500 uppercase mb-4">Conteo de Categorías</h2>
+                <h2 className="text-sm font-bold text-slate-700 dark:text-slate-300 uppercase mb-4 flex items-center gap-2">
+                   <div className="w-3 h-3 rounded-full bg-purple-500"></div> Volumen Total de Registros
+                </h2>
                 <div className="h-64 w-full">
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={pieData}>
+                    <BarChart data={barData}>
                       <XAxis dataKey="name" />
                       <YAxis />
                       <Tooltip />
-                      <Bar dataKey="value" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="Volúmen" fill="#8b5cf6" radius={[6, 6, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -179,7 +235,7 @@ export default function Home() {
   return (
     <div className="space-y-8">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-800 dark:text-white">Conciliaciones</h1>
+        <h1 className="text-2xl font-bold text-slate-800 dark:text-white">Conciliaciones Creadas</h1>
         <Link href="/cargar">
           <button className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium shadow-lg shadow-blue-600/20 transition-all">
             <Plus size={20} />
@@ -188,10 +244,11 @@ export default function Home() {
         </Link>
       </div>
 
-      <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+      <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden min-h-[200px]">
         {conciliations.length === 0 ? (
-          <div className="p-12 text-center text-slate-500">
-            No tienes conciliaciones activas. Haz clic en el botón superior derecho para empazar.
+          <div className="p-12 text-center text-slate-500 flex flex-col items-center justify-center h-full">
+            <FileBox size={48} className="mb-4 text-slate-300 dark:text-slate-700" />
+            No tienes conciliaciones activas. Haz clic en superior derecho para empezar.
           </div>
         ) : (
           <div className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -217,9 +274,9 @@ export default function Home() {
                 
                 <div className="flex-1 flex items-center justify-end gap-12">
                   <div className="text-sm">
-                    <span className="font-medium text-slate-700 dark:text-slate-300 block">{conciliacion.filesCount} Archivos</span>
+                    <span className="font-medium text-slate-700 dark:text-slate-300 block">{conciliacion.filesCount} Archivos Procesados</span>
                     <span className="text-blue-500 text-xs flex items-center gap-1 mt-0.5 hover:underline">
-                      Ver Detalles <ChevronDown size={12} />
+                      Abrir Reporte <ChevronDown size={12} />
                     </span>
                   </div>
                 </div>
@@ -231,14 +288,14 @@ export default function Home() {
 
       {/* DASHBOARDS GENERALES */}
        <div className="pt-8">
-        <h2 className="text-xl font-bold text-slate-800 dark:text-white mb-6">Métricas Generales</h2>
+        <h2 className="text-xl font-bold text-slate-800 dark:text-white mb-6">Métricas Globales</h2>
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-sm flex flex-col justify-center items-center">
-            <h2 className="text-sm font-medium text-slate-500 uppercase">Total Conciliaciones</h2>
+            <h2 className="text-sm font-medium text-slate-500 uppercase">Total Análisis</h2>
             <p className="text-4xl font-bold text-slate-900 dark:text-white mt-4">{conciliations.length}</p>
           </div>
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-sm flex flex-col justify-center items-center">
-             <h2 className="text-sm font-medium text-slate-500 uppercase">Total Archivos Subidos</h2>
+             <h2 className="text-sm font-medium text-slate-500 uppercase">Fuentes Mapeadas</h2>
              <p className="text-4xl font-bold text-blue-600 dark:text-blue-400 mt-4">
                 {conciliations.reduce((sum, item) => sum + item.filesCount, 0)}
              </p>
